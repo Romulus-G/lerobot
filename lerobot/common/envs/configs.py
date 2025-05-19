@@ -154,3 +154,49 @@ class XarmEnv(EnvConfig):
             "visualization_height": self.visualization_height,
             "max_episode_steps": self.episode_length,
         }
+
+
+@EnvConfig.register_subclass("lowcostrobot")
+@dataclass
+class PushCubeEnv(EnvConfig):
+    task: str = "PushCube-v0"
+    fps: int = 25
+
+    max_episode_steps: int = 50
+    observation_mode: str = "state"
+    action_mode: str = "ee"
+    reward_type: str = "dense"
+    block_gripper: bool = True
+    distance_threshold: float = 0.05
+    cube_xy_range: float = 0.3
+    target_xy_range: float = 0.3
+    n_substeps: int = 20
+    render_mode: str | None = None
+
+    def __post_init__(self):
+        action_shape = {"joint": 5, "ee": 3}[self.action_mode]
+        action_shape += 0 if self.block_gripper else 1
+        
+        self.features = {
+            "concatenated_state": PolicyFeature(type=FeatureType.STATE, shape=(6+6+3+3+3,)),
+            "action": PolicyFeature(type=FeatureType.ACTION, shape=(action_shape,)),
+        }
+        self.features_map = {
+            "concatenated_state": OBS_ROBOT,
+            "action": ACTION,
+        }
+
+    @property
+    def gym_kwargs(self) -> dict:
+        return {
+            "max_episode_steps": self.max_episode_steps,
+            "observation_mode": self.observation_mode,
+            "action_mode": self.action_mode,
+            "reward_type": self.reward_type,
+            "block_gripper": self.block_gripper,
+            "distance_threshold": self.distance_threshold,
+            "cube_xy_range": self.cube_xy_range,
+            "target_xy_range": self.target_xy_range,
+            "n_substeps": self.n_substeps,
+            "render_mode": self.render_mode,
+        }

@@ -39,14 +39,15 @@ def _make_memmap_safe(**kwargs) -> np.memmap:
     For information on dtypes:
     https://numpy.org/doc/stable/reference/arrays.dtypes.html#arrays-dtypes-constructing
     """
-    if kwargs["mode"].startswith("w"):
-        required_space = kwargs["dtype"].itemsize * np.prod(kwargs["shape"])  # bytes
-        stats = os.statvfs(Path(kwargs["filename"]).parent)
-        available_space = stats.f_bavail * stats.f_frsize  # bytes
-        if required_space >= available_space * 0.8:
-            raise RuntimeError(
-                f"You're about to take up {required_space} of {available_space} bytes available."
-            )
+    if hasattr(os, 'statvfs'):
+        if kwargs["mode"].startswith("w"):
+            required_space = kwargs["dtype"].itemsize * np.prod(kwargs["shape"])  # bytes
+            stats = os.statvfs(Path(kwargs["filename"]).parent)
+            available_space = stats.f_bavail * stats.f_frsize  # bytes
+            if required_space >= available_space * 0.8:
+                raise RuntimeError(
+                    f"You're about to take up {required_space} of {available_space} bytes available."
+                )
     return np.memmap(**kwargs)
 
 

@@ -16,6 +16,7 @@
 from typing import Iterator, Union
 
 import torch
+from numpy import isnan
 
 
 class EpisodeAwareSampler:
@@ -59,3 +60,23 @@ class EpisodeAwareSampler:
 
     def __len__(self) -> int:
         return len(self.indices)
+
+
+class CustomRandomSampler(torch.utils.data.Sampler):
+    def __init__(self, data_source, num_samples):
+        self.data_source = data_source
+        self.num_samples = num_samples
+        self.rewards = self.data_source._data["next.reward"]
+
+    def __iter__(self):
+        seed = int(torch.empty((), dtype=torch.int64).random_().item())
+        rng = torch.Generator().manual_seed(seed)
+        
+        for _ in range(self.num_samples):
+            while isnan(self.rewards[
+                i := torch.randint(len(self), size=(1,), generator=rng).item()
+                ]): pass
+            yield i
+    
+    def __len__(self):
+        return len(self.data_source)

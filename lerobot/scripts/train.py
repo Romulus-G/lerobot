@@ -54,7 +54,7 @@ from lerobot.scripts.eval import eval_policy
 
 
 def update_policy(
-    train_metrics: MetricsTracker,
+    train_tracker: MetricsTracker,
     policy: PreTrainedPolicy,
     batch: Any,
     optimizer: Optimizer,
@@ -98,11 +98,11 @@ def update_policy(
         # To possibly update an internal buffer (for instance an Exponential Moving Average like in TDMPC).
         policy.update()
 
-    train_metrics.loss = loss.item()
-    train_metrics.grad_norm = grad_norm.item()
-    train_metrics.lr = optimizer.param_groups[0]["lr"]
-    train_metrics.update_s = time.perf_counter() - start_time
-    return train_metrics, output_dict
+    train_tracker.loss = loss.item()
+    train_tracker.grad_norm = grad_norm.item()
+    train_tracker.lr = optimizer.param_groups[0]["lr"]
+    train_tracker.update_s = time.perf_counter() - start_time
+    return train_tracker, output_dict
 
 
 @parser.wrap()
