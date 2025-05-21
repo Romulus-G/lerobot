@@ -37,12 +37,12 @@ from lerobot.configs import parser
 from lerobot.configs.train import TrainPipelineConfig
 from lerobot.scripts.eval import eval_policy
 
+from lerobot.common.policies.tdmpc.modeling_tdmpc import TDMPCPolicy
 from lerobot.configs.types import FeatureType, NormalizationMode
 from lerobot.scripts.train import update_policy
 
 def train_online(cfg: TrainPipelineConfig, buffer: OnlineBuffer, policy: TDMPCPolicy):
-    cfg.validate()
-    logging.info(pformat(cfg.to_dict()))
+    logging.info("\n" + pformat(cfg.to_dict()))
 
     if cfg.wandb.enable and cfg.wandb.project:
         wandb_logger = WandBLogger(cfg)
@@ -102,17 +102,17 @@ def train_online(cfg: TrainPipelineConfig, buffer: OnlineBuffer, policy: TDMPCPo
     }
     
     train_tracker = MetricsTracker(
-        cfg.batch_size, 0, 0, train_metrics, initial_step=0
+        cfg.batch_size, buffer._buffer_capacity, 1, train_metrics, initial_step=0
     )
 
     # Main training loop
-    seed_steps = 5000  # TODO: Move to config
+    seed_steps = 50  # TODO: Move to config
     step = 0
     while step < cfg.steps:
         if step == 0:
             logging.info("Populating buffer with random trajectories...")
             while buffer.num_frames < seed_steps:
-                episode, _ = roll_single_episode(env, lambda x: env.action_space.sample(), device)
+                episode, _ = roll_single_episode(env, lambda x: torch.from_numpy(env.action_space.sample()), device)
                 buffer.add_data(episode)
             logging.info(f"Buffer populated with {buffer.num_frames} ({seed_steps=}) transitions corresponding to {buffer.num_episodes} episodes")
             logging.info(f"The policy will be accordingly updated {seed_steps=} times...")
@@ -182,15 +182,15 @@ def train_online(cfg: TrainPipelineConfig, buffer: OnlineBuffer, policy: TDMPCPo
                 logging.info(f"Eval policy at step {step}")
                 policy.eval()
                 with torch.no_grad(), torch.autocast(device_type=policy.device.type) if cfg.policy.use_amp else nullcontext():
-                    eval_info = eval_policy(eval_env, policy, cfg.eval.n_episodes)
-                
+                    eval_info = eval_policy(eval_env, policy, cfg.eval.n_episodes, start_seed=cfg.seed)
+                policy._prev_mean = None
                 eval_metrics = {
                     "avg_sum_reward": AverageMeter("∑rwrd", ":.3f"),
                     "pc_success": AverageMeter("success", ":.1f"),
                     "eval_s": AverageMeter("eval_s", ":.3f"),
                 }
                 eval_tracker = MetricsTracker(
-                    cfg.batch_size, 0, 0, eval_metrics, initial_step=step
+                    cfg.batch_size, 1, 1, eval_metrics, initial_step=step
                 )
                 eval_tracker.eval_s = eval_info["aggregated"].pop("eval_s")
                 eval_tracker.avg_sum_reward = eval_info["aggregated"].pop("avg_sum_reward")
@@ -220,53 +220,54 @@ def roll_single_episode(env, select_action: Callable , device):
     done = False
 
     while not done:
-        batched_obs = {"observation.state":torch.from_numpy(obs).to(device).unsqueeze(0)}
-        action = select_action(batched_obs)
+        batched_obs = {"observation.state":torch.from_numpy(obs).to(device)}
+        action = select_action(batched_obs).numpy(force=True)
         next_obs, reward, terminated, truncated, info = env.step(action)
-        
+
         episode.append({
-            "observation.state": obs,
-            "action": action.numpy(force=True),
-            "next.reward": reward,
-            "next.terminated": terminated,
-            "next.truncated": truncated,
-            "next.done": (done := terminated or truncated)
+            "observation.state": obs.squeeze(0),
+            "action": action.squeeze(0),
+            "next.reward": reward.squeeze(0),
+            "next.terminated": terminated.squeeze(0),
+            "next.truncated": truncated.squeeze(0),
+            "next.done": (done := terminated | truncated).squeeze(0),
         })
 
         episode_step += 1
         obs = concat_obs(next_obs)
     
     episode.append({
-        "observation.state": obs,
-        "action": np.full_like(action, np.nan),
+        "observation.state": obs.squeeze(0),
+        "action": np.full_like(action.squeeze(0), np.nan),
         "next.reward": np.nan,
         "next.terminated": True,
         "next.truncated": True,
-        "next.done": True
+        "next.done": True,
     })
 
     episode_length = len(episode)
     episode = {k:np.stack([t[k] for t in episode]) for k in episode[0].keys()}
-    episode["timestamp"] = np.arange(episode_length, dtype=np.float64)
+    episode["timestamp"] = np.arange(episode_length, dtype=np.float64) / env.metadata["render_fps"]
     episode["index"] = np.arange(episode_length)
     episode["episode_index"] = np.zeros(episode_length, dtype=np.int64)
     episode["frame_index"] = -np.ones(episode_length, dtype=np.int64)
-
     return episode, episode_length
 
 @parser.wrap()
 def apply_custom_config(cfg: TrainPipelineConfig):   
     cfg.policy.latent_dim = cfg.env.features["concatenated_state"].shape[0]
     cfg.policy.normalization_mapping[FeatureType.ACTION] = NormalizationMode.IDENTITY
+    cfg.validate()
 
     logging.info("Creating custom TD-MPC policy")
-    policy = make_policy(cfg.policy, cfg.env)
+    policy = make_policy(cfg.policy, env_cfg=cfg.env)
     # del policy.model.encoder
     # del policy.model_target.encoder
     policy.model.encode = lambda x: x["observation.state"]
     policy.model_target.encode = lambda x: x["observation.state"]
     policy.model.reward = lambda x : torch.norm(x[..., 12:15] - x[..., 18:21], dim=-1)
     policy.model._dynamics = Sequential(*list(policy.model._dynamics.children())[:-2])
+    policy.model_target._dynamics = Sequential(*list(policy.model_target._dynamics.children())[:-2])
     
     logging.info("Creating replay buffer")
     delta_timestamps = {
@@ -285,12 +286,12 @@ def apply_custom_config(cfg: TrainPipelineConfig):
     buffer = OnlineBuffer(
         write_dir=cfg.output_dir/"buffer",
         data_spec=data_spec,
-        buffer_capacity=cfg.steps // 10,
+        buffer_capacity=1000, #cfg.steps // 10,
         fps=cfg.env.fps,
         delta_timestamps=delta_timestamps
     )
     
-    train_online(cfg, env, eval_env, buffer, policy)
+    train_online(cfg, buffer, policy)
 
 if __name__ == "__main__":
     init_logging()
