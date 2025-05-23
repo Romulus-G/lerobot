@@ -144,7 +144,7 @@ def rollout(
         disable=inside_slurm(),  # we dont want progress bar when we use slurm, since it clutters the logs
         leave=False,
     )
-    check_env_attributes_and_types(env)
+    # check_env_attributes_and_types(env) # TODO: deal with this
     while not np.all(done):
         # Numpy array to tensor and changing dictionary keys to LeRobot policy format.
         observation = preprocess_observation(observation)
@@ -157,7 +157,7 @@ def rollout(
 
         # Infer "task" from attributes of environments.
         # TODO: works with SyncVectorEnv but not AsyncVectorEnv
-        observation = add_envs_task(env, observation)
+        # observation = add_envs_task(env, observation) # TODO: deal with this
 
         with torch.inference_mode():
             action = policy.select_action(observation)

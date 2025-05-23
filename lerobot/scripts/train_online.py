@@ -84,7 +84,7 @@ def train_online(cfg: TrainPipelineConfig, buffer: OnlineBuffer, policy: TDMPCPo
         buffer,
         num_workers=cfg.num_workers,
         batch_size=cfg.batch_size,
-        sampler=CustomRandomSampler(buffer, cfg.steps),
+        sampler=CustomRandomSampler(buffer),
         pin_memory=device.type != "cpu"
     )
     dl_iter = iter(dataloader)
@@ -110,12 +110,13 @@ def train_online(cfg: TrainPipelineConfig, buffer: OnlineBuffer, policy: TDMPCPo
     step = 0
     while step < cfg.steps:
         if step == 0:
+            env.action_space.seed(cfg.seed)  # TODO: deal with this
             logging.info("Populating buffer with random trajectories...")
             while buffer.num_frames < seed_steps:
-                episode, _ = roll_single_episode(env, lambda x: torch.from_numpy(env.action_space.sample()), device)
+                episode, _ = roll_single_episode(env, lambda x: torch.from_numpy(env.action_space.sample()), device, cfg.seed)
                 buffer.add_data(episode)
-            logging.info(f"Buffer populated with {buffer.num_frames} ({seed_steps=}) transitions corresponding to {buffer.num_episodes} episodes")
-            logging.info(f"The policy will be accordingly updated {seed_steps=} times...")
+            logging.info(f"Buffer populated with {buffer.num_frames} transitions ({seed_steps=}) corresponding to {buffer.num_episodes} episodes. "
+                        +f"Accordingly, the policy will be updated {seed_steps=} times...")
             num_updates_to_do = seed_steps
 
         else:
@@ -123,7 +124,7 @@ def train_online(cfg: TrainPipelineConfig, buffer: OnlineBuffer, policy: TDMPCPo
                 logging.info("Starting online training...")
 
             # Roll a new episode and add it to the buffer
-            episode, episode_length = roll_single_episode(env, policy.select_action, device)
+            episode, episode_length = roll_single_episode(env, policy.select_action, device, cfg.seed, policy)
             buffer.add_data(episode)
             num_updates_to_do = episode_length
         
@@ -207,14 +208,14 @@ def train_online(cfg: TrainPipelineConfig, buffer: OnlineBuffer, policy: TDMPCPo
         eval_env.close()
     logging.info("End of training")
 
-def roll_single_episode(env, select_action: Callable , device):
+def roll_single_episode(env, select_action: Callable , device, seed, policy=None):
     def concat_obs(obs):
         return np.hstack([obs["arm_qpos"], obs["arm_qvel"], 
                           obs["cube_pos"], obs["cube_vel"], 
                           obs["target_pos"]])
 
     episode = []
-    obs, info = env.reset()
+    obs, info = env.reset(seed=seed)
     obs = concat_obs(obs)
     episode_step = 0
     done = False
@@ -222,6 +223,9 @@ def roll_single_episode(env, select_action: Callable , device):
     while not done:
         batched_obs = {"observation.state":torch.from_numpy(obs).to(device)}
         action = select_action(batched_obs).numpy(force=True)
+        # print("obs actiona", batched_obs["observation.state"].shape, batched_obs["observation.state"])
+        # print("actiona", action)
+        # action = np.ones((1,3)) * 0.05
         next_obs, reward, terminated, truncated, info = env.step(action)
 
         episode.append({
@@ -231,6 +235,7 @@ def roll_single_episode(env, select_action: Callable , device):
             "next.terminated": terminated.squeeze(0),
             "next.truncated": truncated.squeeze(0),
             "next.done": (done := terminated | truncated).squeeze(0),
+            "last": False,
         })
 
         episode_step += 1
@@ -238,11 +243,12 @@ def roll_single_episode(env, select_action: Callable , device):
     
     episode.append({
         "observation.state": obs.squeeze(0),
-        "action": np.full_like(action.squeeze(0), np.nan),
-        "next.reward": np.nan,
+        "action": np.zeros_like(action.squeeze(0)),  # will be masked (shouldn't be nan or inf)
+        "next.reward": 0,                            # will be masked (shouldn't be nan or inf)
         "next.terminated": True,
         "next.truncated": True,
         "next.done": True,
+        "last": True,
     })
 
     episode_length = len(episode)
@@ -281,16 +287,16 @@ def apply_custom_config(cfg: TrainPipelineConfig):
             'next.reward': {'shape': (), 'dtype': np.dtype('float32')},
             'next.terminated': {'shape': (), 'dtype': np.dtype('bool')},
             'next.truncated': {'shape': (), 'dtype': np.dtype('bool')},
-            'next.done': {'shape': (), 'dtype': np.dtype('bool')}
+            'next.done': {'shape': (), 'dtype': np.dtype('bool')},
+            'last': {'shape': (), 'dtype': np.dtype('bool')},
     }
     buffer = OnlineBuffer(
         write_dir=cfg.output_dir/"buffer",
         data_spec=data_spec,
-        buffer_capacity=1000, #cfg.steps // 10,
+        buffer_capacity=cfg.steps // 2,  # TODO: deal with this
         fps=cfg.env.fps,
         delta_timestamps=delta_timestamps
     )
-    
     train_online(cfg, buffer, policy)
 
 if __name__ == "__main__":
