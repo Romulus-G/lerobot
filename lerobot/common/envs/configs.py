@@ -172,13 +172,15 @@ class PushCubeEnv(EnvConfig):
     target_xy_range: float = 0.3
     n_substeps: int = 20
     render_mode: str | None = None
+    robot_observation_mode: str = "ee"
 
     def __post_init__(self):
         action_shape = {"joint": 5, "ee": 3}[self.action_mode]
         action_shape += 0 if self.block_gripper else 1
         
+        state_shape = (6+6+3+3+3,) if self.robot_observation_mode == "joint" else (3+3+3+3+3,) # "ee"
         self.features = {
-            "concatenated_state": PolicyFeature(type=FeatureType.STATE, shape=(6+6+3+3+3,)),
+            "concatenated_state": PolicyFeature(type=FeatureType.STATE, shape=state_shape),
             "action": PolicyFeature(type=FeatureType.ACTION, shape=(action_shape,)),
         }
         self.features_map = {

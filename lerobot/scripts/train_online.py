@@ -50,9 +50,6 @@ def train_online(cfg: TrainPipelineConfig, buffer: OnlineBuffer, policy: TDMPCPo
         wandb_logger = None
         logging.info(colored("Logs will be saved locally.", "yellow", attrs=["bold"]))
 
-    if cfg.seed is not None:
-        set_seed(cfg.seed)
-
     # Check device is available
     device = get_safe_torch_device(cfg.policy.device, log=True)
     torch.backends.cudnn.benchmark = True
@@ -223,9 +220,6 @@ def roll_single_episode(env, select_action: Callable , device, seed, policy=None
     while not done:
         batched_obs = {"observation.state":torch.from_numpy(obs).to(device)}
         action = select_action(batched_obs).numpy(force=True)
-        # print("obs actiona", batched_obs["observation.state"].shape, batched_obs["observation.state"])
-        # print("actiona", action)
-        # action = np.ones((1,3)) * 0.05
         next_obs, reward, terminated, truncated, info = env.step(action)
 
         episode.append({
@@ -260,7 +254,10 @@ def roll_single_episode(env, select_action: Callable , device, seed, policy=None
     return episode, episode_length
 
 @parser.wrap()
-def apply_custom_config(cfg: TrainPipelineConfig):   
+def apply_custom_config(cfg: TrainPipelineConfig):
+    if cfg.seed is not None:
+        set_seed(cfg.seed)
+    
     cfg.policy.latent_dim = cfg.env.features["concatenated_state"].shape[0]
     cfg.policy.normalization_mapping[FeatureType.ACTION] = NormalizationMode.IDENTITY
     cfg.validate()
