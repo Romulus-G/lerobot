@@ -201,4 +201,5 @@ class PushCubeEnv(EnvConfig):
             "target_xy_range": self.target_xy_range,
             "n_substeps": self.n_substeps,
             "render_mode": self.render_mode,
+            "robot_observation_mode": self.robot_observation_mode,
         }

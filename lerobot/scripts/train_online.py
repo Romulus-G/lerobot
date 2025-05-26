@@ -195,7 +195,7 @@ def train_online(cfg: TrainPipelineConfig, buffer: OnlineBuffer, policy: TDMPCPo
                 eval_tracker.pc_success = eval_info["aggregated"].pop("pc_success")
                 logging.info(eval_tracker)
                 if wandb_logger:
-                    wandb_log_dict = {**eval_tracker.to_dict(), **eval_info}
+                    wandb_log_dict = {**eval_tracker.to_dict()} #, **eval_info}
                     wandb_logger.log_dict(wandb_log_dict, step, mode="eval")
                     # wandb_logger.log_video(eval_info["video_paths"][0], step, mode="eval")
                 policy.train()
@@ -207,7 +207,10 @@ def train_online(cfg: TrainPipelineConfig, buffer: OnlineBuffer, policy: TDMPCPo
 
 def roll_single_episode(env, select_action: Callable , device, seed, policy=None):
     def concat_obs(obs):
-        return np.hstack([obs["arm_qpos"], obs["arm_qvel"], 
+        # return np.hstack([obs["arm_qpos"], obs["arm_qvel"], 
+        #                   obs["cube_pos"], obs["cube_vel"], 
+        #                   obs["target_pos"]])
+        return np.hstack([obs["xpos"], obs["xvel"], 
                           obs["cube_pos"], obs["cube_vel"], 
                           obs["target_pos"]])
 
@@ -257,7 +260,7 @@ def roll_single_episode(env, select_action: Callable , device, seed, policy=None
 def apply_custom_config(cfg: TrainPipelineConfig):
     if cfg.seed is not None:
         set_seed(cfg.seed)
-    
+
     cfg.policy.latent_dim = cfg.env.features["concatenated_state"].shape[0]
     cfg.policy.normalization_mapping[FeatureType.ACTION] = NormalizationMode.IDENTITY
     cfg.validate()
@@ -268,7 +271,8 @@ def apply_custom_config(cfg: TrainPipelineConfig):
     # del policy.model_target.encoder
     policy.model.encode = lambda x: x["observation.state"]
     policy.model_target.encode = lambda x: x["observation.state"]
-    policy.model.reward = lambda x : torch.norm(x[..., 12:15] - x[..., 18:21], dim=-1)
+    # policy.model.reward = lambda x : torch.norm(x[..., 12:15] - x[..., 18:21], dim=-1)
+    policy.model.reward = lambda x : torch.norm(x[..., 6:9] - x[..., 12:15], dim=-1)
     policy.model._dynamics = Sequential(*list(policy.model._dynamics.children())[:-2])
     policy.model_target._dynamics = Sequential(*list(policy.model_target._dynamics.children())[:-2])
     

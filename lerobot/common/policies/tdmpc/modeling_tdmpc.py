@@ -455,7 +455,7 @@ class TDMPCPolicy(PreTrainedPolicy):
             advantage = self.model_target.Qs(z_preds[:-1], action, return_min=True) - self.model.V(
                 z_preds[:-1]
             )
-            info["advantage"] = advantage[0]
+            info["advantage"] = advantage[0].min().item()  # TODO: do this outside?
             # (t, b)
             exp_advantage = torch.clamp(torch.exp(advantage * self.config.advantage_scaling), max=100.0)
         action_preds = self.model.pi(z_preds[:-1])  # (t, b, a)

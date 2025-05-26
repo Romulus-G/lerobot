@@ -73,9 +73,12 @@ def preprocess_observation(observations: dict[str, np.ndarray]) -> dict[str, Ten
     return return_observations
 
 def concat_obs(obs):
-    return np.hstack([obs["arm_qpos"], obs["arm_qvel"], 
+    return np.hstack([obs["xpos"], obs["xvel"], 
                       obs["cube_pos"], obs["cube_vel"], 
                       obs["target_pos"]])
+    # return np.hstack([obs["arm_qpos"], obs["arm_qvel"], 
+    #                   obs["cube_pos"], obs["cube_vel"], 
+    #                   obs["target_pos"]])
 
 def env_to_policy_features(env_cfg: EnvConfig) -> dict[str, PolicyFeature]:
     # TODO(aliberts, rcadene): remove this hardcoding of keys and just use the nested keys as is
