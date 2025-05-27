@@ -52,8 +52,8 @@ def train_online(cfg: TrainPipelineConfig, buffer: OnlineBuffer, policy: TDMPCPo
 
     # Check device is available
     device = get_safe_torch_device(cfg.policy.device, log=True)
-    torch.backends.cudnn.benchmark = True
-    torch.backends.cuda.matmul.allow_tf32 = True
+    # torch.backends.cudnn.benchmark = True
+    # torch.backends.cuda.matmul.allow_tf32 = True
 
     logging.info("Creating training env")
     env = make_env(cfg.env)
@@ -103,21 +103,20 @@ def train_online(cfg: TrainPipelineConfig, buffer: OnlineBuffer, policy: TDMPCPo
     )
 
     # Main training loop
-    seed_steps = 50  # TODO: Move to config
     step = 0
     while step < cfg.steps:
         if step == 0:
             env.action_space.seed(cfg.seed)  # TODO: deal with this
             logging.info("Populating buffer with random trajectories...")
-            while buffer.num_frames < seed_steps:
+            while buffer.num_frames < cfg.seed_steps:
                 episode, _ = roll_single_episode(env, lambda x: torch.from_numpy(env.action_space.sample()), device, cfg.seed)
                 buffer.add_data(episode)
-            logging.info(f"Buffer populated with {buffer.num_frames} transitions ({seed_steps=}) corresponding to {buffer.num_episodes} episodes. "
-                        +f"Accordingly, the policy will be updated {seed_steps=} times...")
-            num_updates_to_do = seed_steps
+            logging.info(f"Buffer populated with {buffer.num_frames} transitions ({cfg.seed_steps=}) corresponding to {buffer.num_episodes} episodes. "
+                        +f"Accordingly, the policy will be updated {cfg.seed_steps=} times...")
+            num_updates_to_do = cfg.seed_steps
 
         else:
-            if step == seed_steps:
+            if step == cfg.seed_steps:
                 logging.info("Starting online training...")
 
             # Roll a new episode and add it to the buffer
@@ -207,12 +206,12 @@ def train_online(cfg: TrainPipelineConfig, buffer: OnlineBuffer, policy: TDMPCPo
 
 def roll_single_episode(env, select_action: Callable , device, seed, policy=None):
     def concat_obs(obs):
-        # return np.hstack([obs["arm_qpos"], obs["arm_qvel"], 
-        #                   obs["cube_pos"], obs["cube_vel"], 
-        #                   obs["target_pos"]])
-        return np.hstack([obs["xpos"], obs["xvel"], 
+        return np.hstack([obs["arm_qpos"], obs["arm_qvel"], 
                           obs["cube_pos"], obs["cube_vel"], 
                           obs["target_pos"]])
+        # return np.hstack([obs["xpos"], obs["xvel"], 
+        #                   obs["cube_pos"], obs["cube_vel"], 
+        #                   obs["target_pos"]])
 
     episode = []
     obs, info = env.reset(seed=seed)
@@ -271,8 +270,10 @@ def apply_custom_config(cfg: TrainPipelineConfig):
     # del policy.model_target.encoder
     policy.model.encode = lambda x: x["observation.state"]
     policy.model_target.encode = lambda x: x["observation.state"]
-    # policy.model.reward = lambda x : torch.norm(x[..., 12:15] - x[..., 18:21], dim=-1)
-    policy.model.reward = lambda x : torch.norm(x[..., 6:9] - x[..., 12:15], dim=-1)
+    if cfg.env.robot_observation_mode == "joint":
+        policy.model.reward = lambda x : torch.norm(x[..., 12:15] - x[..., 18:21], dim=-1)
+    else:
+        policy.model.reward = lambda x : torch.norm(x[..., 6:9] - x[..., 12:15], dim=-1)
     policy.model._dynamics = Sequential(*list(policy.model._dynamics.children())[:-2])
     policy.model_target._dynamics = Sequential(*list(policy.model_target._dynamics.children())[:-2])
     
@@ -294,7 +295,7 @@ def apply_custom_config(cfg: TrainPipelineConfig):
     buffer = OnlineBuffer(
         write_dir=cfg.output_dir/"buffer",
         data_spec=data_spec,
-        buffer_capacity=cfg.steps // 2,  # TODO: deal with this
+        buffer_capacity=cfg.steps // 10,  # TODO: deal with this
         fps=cfg.env.fps,
         delta_timestamps=delta_timestamps
     )
