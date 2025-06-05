@@ -3,7 +3,6 @@ import time
 from contextlib import nullcontext
 from pprint import pformat
 from termcolor import colored
-from typing import Any, Callable
 
 import torch
 from torch.amp import GradScaler
@@ -11,7 +10,7 @@ from torch.nn import Sequential
 import numpy as np
 
 from lerobot.common.datasets.online_buffer import OnlineBuffer
-from lerobot.common.datasets.sampler import CustomRandomSampler
+from lerobot.common.datasets.sampler import RejectionSampler
 from lerobot.common.envs.factory import make_env
 from lerobot.common.optim.factory import make_optimizer_and_scheduler
 from lerobot.common.policies.factory import make_policy
@@ -37,12 +36,13 @@ from lerobot.configs import parser
 from lerobot.configs.train import TrainPipelineConfig
 from lerobot.scripts.eval import eval_policy
 
-from lerobot.common.policies.tdmpc.modeling_tdmpc import TDMPCPolicy
 from lerobot.configs.types import FeatureType, NormalizationMode
 from lerobot.scripts.train import update_policy
+from gymnasium import make_vec as gym_make_vec
 
-def train_online(cfg: TrainPipelineConfig, buffer: OnlineBuffer, policy: TDMPCPolicy):
-    logging.info("\n" + pformat(cfg.to_dict()))
+@parser.wrap()
+def train_online(cfg: TrainPipelineConfig):
+    cfg._save_pretrained(cfg.output_dir) # logging.info("\n" + pformat(cfg.to_dict()))
 
     if cfg.wandb.enable and cfg.wandb.project:
         wandb_logger = WandBLogger(cfg)
@@ -50,45 +50,72 @@ def train_online(cfg: TrainPipelineConfig, buffer: OnlineBuffer, policy: TDMPCPo
         wandb_logger = None
         logging.info(colored("Logs will be saved locally.", "yellow", attrs=["bold"]))
 
-    # Check device is available
     device = get_safe_torch_device(cfg.policy.device, log=True)
-    # torch.backends.cudnn.benchmark = True
-    # torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.benchmark = True
+    torch.backends.cuda.matmul.allow_tf32 = True
 
     logging.info("Creating training env")
-    env = make_env(cfg.env)
+    env = gym_make_vec(f"{cfg.env.module}:{cfg.env.task}",
+                       wrappers=cfg.env.wrappers if hasattr(cfg.env, "wrappers") else None,
+                       disable_env_checker=True, **cfg.env.gym_kwargs)
     eval_env = None
     if cfg.eval_freq > 0 and cfg.env is not None:
         logging.info("Creating eval envs")
-        eval_env = make_env(cfg.env, n_envs=cfg.eval.batch_size, use_async_envs=cfg.eval.use_async_envs)
+        eval_env = gym_make_vec(f"{cfg.env.module}:{cfg.env.task}", 
+                                num_envs=cfg.eval.batch_size, vectorization_mode="async" if cfg.eval.use_async_envs else "sync",
+                                wrappers=cfg.env.wrappers if hasattr(cfg.env, "wrappers") else None,
+                                disable_env_checker=True, **cfg.env.gym_kwargs)
+
+    if cfg.seed is not None:
+        set_seed(cfg.seed)
+        env.action_space.seed(cfg.seed)
+        env.reset(seed=cfg.seed)
+        if eval_env:
+            eval_env.action_space.seed(cfg.seed)
+            eval_env.reset(seed=cfg.seed)
+    
+    #--------------------------------------------------------------------------
+    # Hacking the TD-MPC implementation for the NO LATENT SPACE experiment
+    #--------------------------------------------------------------------------
+    logging.info("Modifying TD-MPC config for NO LATENT SPACE experiment")
+    cfg.policy.latent_dim = cfg.env.state_numel
+    cfg.policy.normalization_mapping[FeatureType.ACTION] = NormalizationMode.IDENTITY
+    cfg.validate()
+
+    logging.info("Creating and modifying TD-MPC policy for NO LATENT SPACE experiment")
+    policy = make_policy(cfg.policy, env_cfg=cfg.env)
+    del policy.model.encoder
+    del policy.model_target.encoder
+    policy.model.encode = lambda x: x["observation.state"]
+    policy.model_target.encode = lambda x: x["observation.state"]
+    policy.model._dynamics = Sequential(*list(policy.model._dynamics.children())[:-2])
+    policy.model_target._dynamics = Sequential(*list(policy.model_target._dynamics.children())[:-2])
+    #--------------------------------------------------------------------------
+
+    num_learnable_params = sum(p.numel() for p in policy.parameters() if p.requires_grad)
+    num_total_params = sum(p.numel() for p in policy.parameters())
+    logging.info(colored("Output dir:", "yellow", attrs=["bold"]) + f" {cfg.output_dir}")
+    logging.info(f"{cfg.env.task=}")
+    logging.info(f"{cfg.steps=} ({format_big_number(cfg.steps)})")
+    logging.info(f"{num_learnable_params=} ({format_big_number(num_learnable_params)})")
+    logging.info(f"{num_total_params=} ({format_big_number(num_total_params)})")
 
     logging.info("Creating optimizer and scheduler")
     optimizer, lr_scheduler = make_optimizer_and_scheduler(cfg, policy)
     grad_scaler = GradScaler(device.type, enabled=cfg.policy.use_amp)
+    policy.train()
 
-    num_learnable_params = sum(p.numel() for p in policy.parameters() if p.requires_grad)
-    num_total_params = sum(p.numel() for p in policy.parameters())
-
-    logging.info(colored("Output dir:", "yellow", attrs=["bold"]) + f" {cfg.output_dir}")
-    logging.info(f"{cfg.env.task=}")
-    logging.info(f"{cfg.steps=} ({format_big_number(cfg.steps)})")
-    logging.info(f"{buffer.num_frames=} ({format_big_number(buffer.num_frames)})")
-    logging.info(f"{buffer.num_episodes=}")
-    logging.info(f"{num_learnable_params=} ({format_big_number(num_learnable_params)})")
-    logging.info(f"{num_total_params=} ({format_big_number(num_total_params)})")
-               
+    logging.info("Creating replay buffer")
+    buffer = make_online_buffer(cfg)
     dataloader = torch.utils.data.DataLoader(
         buffer,
         num_workers=cfg.num_workers,
         batch_size=cfg.batch_size,
-        sampler=CustomRandomSampler(buffer),
+        sampler=RejectionSampler(buffer, buffer._data["last"]),
         pin_memory=device.type != "cpu"
     )
     dl_iter = iter(dataloader)
 
-    policy.train()
-
-    # Initialize metrics
     train_metrics = {
         "loss": AverageMeter("loss", ":.3f"),
         "grad_norm": AverageMeter("grdn", ":.3f"),
@@ -97,34 +124,24 @@ def train_online(cfg: TrainPipelineConfig, buffer: OnlineBuffer, policy: TDMPCPo
         "dataloading_s": AverageMeter("data_s", ":.3f"),
         "episode_reward": AverageMeter("ep_rwrd", ":.3f"),
     }
-    
-    train_tracker = MetricsTracker(
-        cfg.batch_size, buffer._buffer_capacity, 1, train_metrics, initial_step=0
-    )
+    train_tracker = MetricsTracker(cfg.batch_size, buffer._buffer_capacity, env.spec.max_episode_steps, train_metrics, initial_step=0)
 
-    # Main training loop
     step = 0
     while step < cfg.steps:
         if step == 0:
-            env.action_space.seed(cfg.seed)  # TODO: deal with this
             logging.info("Populating buffer with random trajectories...")
             while buffer.num_frames < cfg.seed_steps:
-                episode, _ = roll_single_episode(env, lambda x: torch.from_numpy(env.action_space.sample()), device, cfg.seed)
+                episode, _ = roll_single_episode(env)
                 buffer.add_data(episode)
-            logging.info(f"Buffer populated with {buffer.num_frames} transitions ({cfg.seed_steps=}) corresponding to {buffer.num_episodes} episodes. "
-                        +f"Accordingly, the policy will be updated {cfg.seed_steps=} times...")
             num_updates_to_do = cfg.seed_steps
-
+            logging.info(f"Buffer populated with {buffer.num_frames} transitions ({cfg.seed_steps=}) corresponding to {buffer.num_episodes} episodes. Accordingly, the policy will be updated {num_updates_to_do} times...")
+        
         else:
-            if step == cfg.seed_steps:
-                logging.info("Starting online training...")
-
-            # Roll a new episode and add it to the buffer
-            episode, episode_length = roll_single_episode(env, policy.select_action, device, cfg.seed, policy)
+            if step == cfg.seed_steps: logging.info("Starting online training...")
+            episode, episode_length = roll_single_episode(env, policy)
             buffer.add_data(episode)
             num_updates_to_do = episode_length
         
-        # Update the policy num_updates_to_do times
         for _ in range(num_updates_to_do):
             start_time = time.perf_counter()
             batch = next(dl_iter)
@@ -132,8 +149,8 @@ def train_online(cfg: TrainPipelineConfig, buffer: OnlineBuffer, policy: TDMPCPo
             
             for key in batch:
                 if isinstance(batch[key], torch.Tensor):
-                    batch[key] = batch[key].to(device) #, non_blocking=True)
-        
+                    batch[key] = batch[key].to(device, non_blocking=True)
+
             train_tracker, output_dict = update_policy(
                 train_tracker,
                 policy,
@@ -179,7 +196,11 @@ def train_online(cfg: TrainPipelineConfig, buffer: OnlineBuffer, policy: TDMPCPo
                 logging.info(f"Eval policy at step {step}")
                 policy.eval()
                 with torch.no_grad(), torch.autocast(device_type=policy.device.type) if cfg.policy.use_amp else nullcontext():
-                    eval_info = eval_policy(eval_env, policy, cfg.eval.n_episodes, start_seed=cfg.seed)
+                    eval_info = eval_policy(
+                        eval_env, policy, cfg.eval.n_episodes, 
+                        start_seed=cfg.seed+step, 
+                        max_episodes_rendered=2, 
+                        videos_dir=cfg.output_dir/"videos")
                 policy._prev_mean = None
                 eval_metrics = {
                     "avg_sum_reward": AverageMeter("∑rwrd", ":.3f"),
@@ -196,7 +217,7 @@ def train_online(cfg: TrainPipelineConfig, buffer: OnlineBuffer, policy: TDMPCPo
                 if wandb_logger:
                     wandb_log_dict = {**eval_tracker.to_dict()} #, **eval_info}
                     wandb_logger.log_dict(wandb_log_dict, step, mode="eval")
-                    # wandb_logger.log_video(eval_info["video_paths"][0], step, mode="eval")
+                    wandb_logger.log_video(eval_info["video_paths"][0], step, mode="eval")
                 policy.train()
     
     env.close()
@@ -204,24 +225,42 @@ def train_online(cfg: TrainPipelineConfig, buffer: OnlineBuffer, policy: TDMPCPo
         eval_env.close()
     logging.info("End of training")
 
-def roll_single_episode(env, select_action: Callable , device, seed, policy=None):
-    def concat_obs(obs):
-        return np.hstack([obs["arm_qpos"], obs["arm_qvel"], 
-                          obs["cube_pos"], obs["cube_vel"], 
-                          obs["target_pos"]])
-        # return np.hstack([obs["xpos"], obs["xvel"], 
-        #                   obs["cube_pos"], obs["cube_vel"], 
-        #                   obs["target_pos"]])
+def make_online_buffer(cfg: TrainPipelineConfig):
+    delta_timestamps = {
+        'observation.state': cfg.policy.observation_delta_indices,
+        'action': cfg.policy.action_delta_indices,
+        'next.reward': cfg.policy.reward_delta_indices,
+    }
+    data_spec = {
+            'observation.state': {'shape': cfg.env.features['flattened_state'].shape, 'dtype': np.dtype('float32')},
+            'action': {'shape': cfg.env.features['action'].shape, 'dtype': np.dtype('float32')},
+            'next.reward': {'shape': (), 'dtype': np.dtype('float32')},
+            'next.terminated': {'shape': (), 'dtype': np.dtype('bool')},
+            'next.truncated': {'shape': (), 'dtype': np.dtype('bool')},
+            'next.done': {'shape': (), 'dtype': np.dtype('bool')},
+            'last': {'shape': (), 'dtype': np.dtype('bool')},
+    }
+    buffer = OnlineBuffer(
+        write_dir=cfg.output_dir/"buffer",
+        data_spec=data_spec,
+        buffer_capacity=np.clip(cfg.steps//5, 1_000, 1_000_000), # TODO: deal with this
+        fps=cfg.env.fps,
+        delta_timestamps=delta_timestamps
+    )
+    return buffer
 
+def roll_single_episode(env, policy=None):
+    if policy is None:
+        select_action = env.action_space.sample
+    else:
+        select_action = lambda obs: policy.select_action( {"observation.state": torch.from_numpy(obs).to(policy.device)} ).numpy(force=True)
+    
     episode = []
-    obs, info = env.reset(seed=seed)
-    obs = concat_obs(obs)
+    obs, info = env.reset()
     episode_step = 0
     done = False
-
     while not done:
-        batched_obs = {"observation.state":torch.from_numpy(obs).to(device)}
-        action = select_action(batched_obs).numpy(force=True)
+        action = select_action(obs)
         next_obs, reward, terminated, truncated, info = env.step(action)
 
         episode.append({
@@ -235,7 +274,7 @@ def roll_single_episode(env, select_action: Callable , device, seed, policy=None
         })
 
         episode_step += 1
-        obs = concat_obs(next_obs)
+        obs = next_obs
     
     episode.append({
         "observation.state": obs.squeeze(0),
@@ -249,71 +288,12 @@ def roll_single_episode(env, select_action: Callable , device, seed, policy=None
 
     episode_length = len(episode)
     episode = {k:np.stack([t[k] for t in episode]) for k in episode[0].keys()}
-    episode["timestamp"] = np.arange(episode_length, dtype=np.float64) / env.metadata["render_fps"]
+    episode["timestamp"] = np.arange(episode_length, dtype=np.float64) # / env.metadata["render_fps"]
     episode["index"] = np.arange(episode_length)
     episode["episode_index"] = np.zeros(episode_length, dtype=np.int64)
     episode["frame_index"] = -np.ones(episode_length, dtype=np.int64)
     return episode, episode_length
 
-@parser.wrap()
-def apply_custom_config(cfg: TrainPipelineConfig):
-    if cfg.seed is not None:
-        set_seed(cfg.seed)
-
-    cfg.policy.latent_dim = cfg.env.features["concatenated_state"].shape[0]
-    cfg.policy.normalization_mapping[FeatureType.ACTION] = NormalizationMode.IDENTITY
-    cfg.validate()
-
-    logging.info("Creating custom TD-MPC policy")
-    policy = make_policy(cfg.policy, env_cfg=cfg.env)
-    # del policy.model.encoder
-    # del policy.model_target.encoder
-    policy.model.encode = lambda x: x["observation.state"]
-    policy.model_target.encode = lambda x: x["observation.state"]
-    if cfg.env.robot_observation_mode == "joint":
-        policy.model.reward = lambda x : torch.norm(x[..., 12:15] - x[..., 18:21], dim=-1)
-    else:
-        policy.model.reward = lambda x : torch.norm(x[..., 6:9] - x[..., 12:15], dim=-1)
-    policy.model._dynamics = Sequential(*list(policy.model._dynamics.children())[:-2])
-    policy.model_target._dynamics = Sequential(*list(policy.model_target._dynamics.children())[:-2])
-    
-    logging.info("Creating replay buffer")
-    delta_timestamps = {
-        'observation.state': np.array(cfg.policy.observation_delta_indices) / cfg.env.fps,
-        'action': np.array(cfg.policy.action_delta_indices) / cfg.env.fps,
-        'next.reward': np.array(cfg.policy.reward_delta_indices) / cfg.env.fps,
-    }
-    data_spec = {
-            'observation.state': {'shape': cfg.env.features['concatenated_state'].shape, 'dtype': np.dtype('float32')},
-            'action': {'shape': cfg.env.features['action'].shape, 'dtype': np.dtype('float32')},
-            'next.reward': {'shape': (), 'dtype': np.dtype('float32')},
-            'next.terminated': {'shape': (), 'dtype': np.dtype('bool')},
-            'next.truncated': {'shape': (), 'dtype': np.dtype('bool')},
-            'next.done': {'shape': (), 'dtype': np.dtype('bool')},
-            'last': {'shape': (), 'dtype': np.dtype('bool')},
-    }
-    buffer = OnlineBuffer(
-        write_dir=cfg.output_dir/"buffer",
-        data_spec=data_spec,
-        buffer_capacity=cfg.steps // 10,  # TODO: deal with this
-        fps=cfg.env.fps,
-        delta_timestamps=delta_timestamps
-    )
-    train_online(cfg, buffer, policy)
-
 if __name__ == "__main__":
     init_logging()
-    apply_custom_config()
-
-    # env = gym.make(cfg.env.task, **cfg.env.gym_kwargs)
-    
-    # VectorEnv = gym.vector.AsyncVectorEnv if cfg.eval.use_async_envs else gym.vector.SyncVectorEnv
-    # eval_env = VectorEnv(
-    #     [lambda: gym.make(cfg.env.task, disable_env_checker=True, **cfg.env.gym_kwargs) for _ in range(cfg.eval.batch_size)]
-    # )
-
-    # eval_env = gym.make_vec(cfg.env.task, 
-    #                         disable_env_checker=True,
-    #                         num_envs=cfg.eval.batch_size, 
-    #                         vectorization_mode="async" if cfg.eval.use_async_envs else "sync",
-    #                         **cfg.env.gym_kwargs)
+    train_online()

@@ -62,17 +62,17 @@ class EpisodeAwareSampler:
         return len(self.indices)
 
 
-class CustomRandomSampler(torch.utils.data.Sampler):
-    def __init__(self, data_source):
+class RejectionSampler(torch.utils.data.Sampler):
+    def __init__(self, data_source, reject_source):
         self.data_source = data_source
-        self.last = self.data_source._data["last"]
+        self.reject_source = reject_source
 
     def __iter__(self):
         seed = int(torch.empty((), dtype=torch.int64).random_().item())
         rng = torch.Generator().manual_seed(seed)
         
         while True:
-            while self.last[i := torch.randint(len(self), (), generator=rng)]:
+            while self.reject_source[i := torch.randint(len(self), (), generator=rng)]:
                 pass
             yield i
     

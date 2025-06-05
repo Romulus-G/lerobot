@@ -69,16 +69,9 @@ def preprocess_observation(observations: dict[str, np.ndarray]) -> dict[str, Ten
     # TODO(rcadene): enable pixels only baseline with `obs_type="pixels"` in environment by removing
     # requirement for "agent_pos"
     # return_observations["observation.state"] = torch.from_numpy(observations["agent_pos"]).float()
-    return_observations["observation.state"] = torch.from_numpy(concat_obs(observations)).float()
+    return_observations["observation.state"] = torch.from_numpy(observations).float()
     return return_observations
 
-def concat_obs(obs):
-    # return np.hstack([obs["xpos"], obs["xvel"], 
-    #                   obs["cube_pos"], obs["cube_vel"], 
-    #                   obs["target_pos"]])
-    return np.hstack([obs["arm_qpos"], obs["arm_qvel"], 
-                      obs["cube_pos"], obs["cube_vel"], 
-                      obs["target_pos"]])
 
 def env_to_policy_features(env_cfg: EnvConfig) -> dict[str, PolicyFeature]:
     # TODO(aliberts, rcadene): remove this hardcoding of keys and just use the nested keys as is
