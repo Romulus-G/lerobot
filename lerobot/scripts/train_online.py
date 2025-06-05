@@ -42,6 +42,8 @@ from gymnasium import make_vec as gym_make_vec
 
 @parser.wrap()
 def train_online(cfg: TrainPipelineConfig):
+    if cfg.seed is not None:
+        set_seed(cfg.seed)
 
     #--------------------------------------------------------------------------
     # Hacking the TD-MPC implementation for the NO LATENT SPACE experiment
@@ -87,7 +89,6 @@ def train_online(cfg: TrainPipelineConfig):
                                 disable_env_checker=True, **cfg.env.gym_kwargs)
 
     if cfg.seed is not None:
-        set_seed(cfg.seed)
         env.action_space.seed(cfg.seed)
         env.reset(seed=cfg.seed)
         if eval_env:
@@ -201,7 +202,7 @@ def train_online(cfg: TrainPipelineConfig):
                     eval_info = eval_policy(
                         eval_env, policy, cfg.eval.n_episodes, 
                         start_seed=cfg.seed+step, 
-                        max_episodes_rendered=2, 
+                        max_episodes_rendered=1, 
                         videos_dir=cfg.output_dir/"videos")
                 policy._prev_mean = None
                 eval_metrics = {
