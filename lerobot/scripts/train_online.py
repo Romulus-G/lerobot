@@ -42,7 +42,27 @@ from gymnasium import make_vec as gym_make_vec
 
 @parser.wrap()
 def train_online(cfg: TrainPipelineConfig):
-    cfg._save_pretrained(cfg.output_dir) # logging.info("\n" + pformat(cfg.to_dict()))
+
+    #--------------------------------------------------------------------------
+    # Hacking the TD-MPC implementation for the NO LATENT SPACE experiment
+    #--------------------------------------------------------------------------
+    logging.info("Modifying TD-MPC config for NO LATENT SPACE experiment")
+    cfg.policy.latent_dim = cfg.env.state_numel
+    cfg.policy.normalization_mapping[FeatureType.ACTION] = NormalizationMode.IDENTITY
+
+    logging.info("Creating and modifying TD-MPC policy for NO LATENT SPACE experiment")
+    policy = make_policy(cfg.policy, env_cfg=cfg.env)
+    del policy.model._encoder
+    del policy.model_target._encoder
+    policy.model.encode = lambda x: x["observation.state"]
+    policy.model_target.encode = lambda x: x["observation.state"]
+    policy.model._dynamics = Sequential(*list(policy.model._dynamics.children())[:-2])
+    policy.model_target._dynamics = Sequential(*list(policy.model_target._dynamics.children())[:-2])
+    #--------------------------------------------------------------------------
+
+    cfg.validate()
+    cfg.output_dir.mkdir(parents=True, exist_ok=True)
+    cfg._save_pretrained(cfg.output_dir)
 
     if cfg.wandb.enable and cfg.wandb.project:
         wandb_logger = WandBLogger(cfg)
@@ -73,24 +93,6 @@ def train_online(cfg: TrainPipelineConfig):
         if eval_env:
             eval_env.action_space.seed(cfg.seed)
             eval_env.reset(seed=cfg.seed)
-    
-    #--------------------------------------------------------------------------
-    # Hacking the TD-MPC implementation for the NO LATENT SPACE experiment
-    #--------------------------------------------------------------------------
-    logging.info("Modifying TD-MPC config for NO LATENT SPACE experiment")
-    cfg.policy.latent_dim = cfg.env.state_numel
-    cfg.policy.normalization_mapping[FeatureType.ACTION] = NormalizationMode.IDENTITY
-    cfg.validate()
-
-    logging.info("Creating and modifying TD-MPC policy for NO LATENT SPACE experiment")
-    policy = make_policy(cfg.policy, env_cfg=cfg.env)
-    del policy.model.encoder
-    del policy.model_target.encoder
-    policy.model.encode = lambda x: x["observation.state"]
-    policy.model_target.encode = lambda x: x["observation.state"]
-    policy.model._dynamics = Sequential(*list(policy.model._dynamics.children())[:-2])
-    policy.model_target._dynamics = Sequential(*list(policy.model_target._dynamics.children())[:-2])
-    #--------------------------------------------------------------------------
 
     num_learnable_params = sum(p.numel() for p in policy.parameters() if p.requires_grad)
     num_total_params = sum(p.numel() for p in policy.parameters())
@@ -251,9 +253,10 @@ def make_online_buffer(cfg: TrainPipelineConfig):
 
 def roll_single_episode(env, policy=None):
     if policy is None:
-        select_action = env.action_space.sample
+        select_action = lambda x: env.action_space.sample()
     else:
-        select_action = lambda obs: policy.select_action( {"observation.state": torch.from_numpy(obs).to(policy.device)} ).numpy(force=True)
+        device = next(policy.parameters()).device
+        select_action = lambda obs: policy.select_action( {"observation.state": torch.from_numpy(obs).to(device)} ).numpy(force=True)
     
     episode = []
     obs, info = env.reset()

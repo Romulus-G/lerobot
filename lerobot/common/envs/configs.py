@@ -158,80 +158,7 @@ class XarmEnv(EnvConfig):
 
 @EnvConfig.register_subclass("lowcostrobot")
 @dataclass
-class PushCubeEnv(EnvConfig):
-    task: str = "PushCube-v0"
-    fps: int = 25
-    module: str = "gym_lowcostrobot"
-
-    max_episode_steps: int = 50
-    observation_mode: str = "state"
-    action_mode: str = "ee"
-    reward_type: str = "dense"
-    block_gripper: bool = True
-    distance_threshold: float = 0.05
-    cube_xy_range: float = 0.3
-    target_xy_range: float = 0.3
-    n_substeps: int = 20
-    render_mode: str | None = None
-    robot_observation_mode: str | None = "joint"
-    cube_vel: bool = False
-    help_ee_to_cube: bool = False
-
-    def __post_init__(self):
-        if self.observation_mode in ['image', 'both'] or self.block_gripper or self.reward_type == 'sparse': raise NotImplementedError
-
-        action_shape = {"joint": 5, "ee": 3}[self.action_mode]
-        action_shape += 0 if self.block_gripper else 1
-
-        self.filter_keys, robot_state_numel = self.filter_map[self.robot_observation_mode]
-        self.filter_keys += ['target_pos', 'cube_pos'] if self.observation_mode == 'state' else ['image_front', 'image_top']
-        self.filter_keys += ['cube_vel'] if self.cube_vel else []
-
-        from gymnasium.wrappers import FilterObservation, FlattenObservation
-        self.wrappers = [lambda env: FilterObservation(env, self.filter_keys),
-                         lambda env: FlattenObservation(env),]
-
-        env_state_numel = ((3+3 if self.cube_vel else 3) + 3) # if self.observation_mode == 'state'
-        self.state_numel = robot_state_numel + env_state_numel
-        self.features = {
-            "flattened_state": PolicyFeature(type=FeatureType.STATE, shape=self.state_numel),
-            "action": PolicyFeature(type=FeatureType.ACTION, shape=(action_shape,)),
-        }
-        self.features_map = {
-            "flattened_state": OBS_ROBOT,
-            "action": ACTION,
-        }
-
-    @property
-    def filter_map(self) -> dict[str | None, tuple[list[str], int]]:
-        return {
-            None: ([], 0),
-            'joint': (['arm_qpos', 'arm_qvel'], 6+6),
-            'ee': (['ee_xpos', 'ee_xvel'], 3+3),
-            'all': (['arm_qpos', 'arm_qvel', 'ee_xpos', 'ee_xvel'], 6+6+3+3)
-        }
-
-    @property
-    def gym_kwargs(self) -> dict:
-        return {
-            "max_episode_steps": self.max_episode_steps,
-            "observation_mode": self.observation_mode,
-            "action_mode": self.action_mode,
-            "reward_type": self.reward_type,
-            "block_gripper": self.block_gripper,
-            "distance_threshold": self.distance_threshold,
-            "cube_xy_range": self.cube_xy_range,
-            "target_xy_range": self.target_xy_range,
-            "n_substeps": self.n_substeps,
-            "render_mode": self.render_mode,
-            "robot_observation_mode": self.robot_observation_mode,
-            "cube_vel": self.cube_vel,
-            "help_ee_to_cube": self.help_ee_to_cube,
-        }
-    
-@EnvConfig.register_subclass("lowcostrobot")
-@dataclass
-class PushCubeEnv(EnvConfig):
+class LowCostRobotEnv(EnvConfig):
     task: str = "PushCube-v0"
     fps: int = 25
     module: str = "gym_lowcostrobot"
@@ -249,29 +176,30 @@ class PushCubeEnv(EnvConfig):
 
     # only for PushCube-v0
     target_xy_range: float = 0.3
-    
+
     robot_observation_mode: str | None = "joint"
     cube_vel: bool = False
     help_ee_to_cube: bool = False
 
     def __post_init__(self):
-        if self.observation_mode in ['image', 'both'] or self.block_gripper or self.reward_type == 'sparse': raise NotImplementedError
+        if self.observation_mode in ['image', 'both'] or not self.block_gripper or self.reward_type == 'sparse': raise NotImplementedError
 
         action_shape = {"joint": 5, "ee": 3}[self.action_mode]
         action_shape += 0 if self.block_gripper else 1
 
         self.filter_keys, robot_state_numel = self.filter_map[self.robot_observation_mode]
-        self.filter_keys += ['target_pos', 'cube_pos'] if self.observation_mode == 'state' else ['image_front', 'image_top']
+        self.filter_keys += ['cube_pos'] if self.observation_mode == 'state' else ['image_front', 'image_top']
+        self.filter_keys += ['target_pos'] if (self.task == "PushCube-v0" and self.observation_mode == 'state') else []
         self.filter_keys += ['cube_vel'] if self.cube_vel else []
 
         from gymnasium.wrappers import FilterObservation, FlattenObservation
         self.wrappers = [lambda env: FilterObservation(env, self.filter_keys),
                          lambda env: FlattenObservation(env),]
 
-        env_state_numel = ((3+3 if self.cube_vel else 3) + 3) # if self.observation_mode == 'state'
+        env_state_numel = (3+3 if self.cube_vel else 3) + (3 if self.task == "PushCube-v0" else 0) # if self.observation_mode == 'state'
         self.state_numel = robot_state_numel + env_state_numel
         self.features = {
-            "flattened_state": PolicyFeature(type=FeatureType.STATE, shape=self.state_numel),
+            "flattened_state": PolicyFeature(type=FeatureType.STATE, shape=(self.state_numel,)),
             "action": PolicyFeature(type=FeatureType.ACTION, shape=(action_shape,)),
         }
         self.features_map = {
@@ -300,9 +228,9 @@ class PushCubeEnv(EnvConfig):
             "cube_xy_range": self.cube_xy_range,
             "n_substeps": self.n_substeps,
             "render_mode": self.render_mode,
-        } | {
+        } | ({
             "target_xy_range": self.target_xy_range,
             "robot_observation_mode": self.robot_observation_mode,
             "cube_vel": self.cube_vel,
             "help_ee_to_cube": self.help_ee_to_cube,
-        }
+        } if self.task == "PushCube-v0" else {})
