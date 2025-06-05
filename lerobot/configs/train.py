@@ -29,7 +29,7 @@ from lerobot.configs import parser
 from lerobot.configs.default import DatasetConfig, EvalConfig, WandBConfig
 from lerobot.configs.policies import PreTrainedConfig
 
-TRAIN_CONFIG_NAME = "train_config.json"
+TRAIN_CONFIG_NAME = "train_config.yaml"
 
 
 @dataclass
@@ -126,7 +126,7 @@ class TrainPipelineConfig(HubMixin):
         return draccus.encode(self)
 
     def _save_pretrained(self, save_directory: Path) -> None:
-        with open(save_directory / TRAIN_CONFIG_NAME, "w") as f, draccus.config_type("json"):
+        with open(save_directory / TRAIN_CONFIG_NAME, "w") as f, draccus.config_type("yaml"):
             draccus.dump(self, f, indent=4)
 
     @classmethod
