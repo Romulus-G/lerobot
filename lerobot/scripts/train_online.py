@@ -244,7 +244,7 @@ def make_online_buffer(cfg: TrainPipelineConfig):
         write_dir=cfg.output_dir/"buffer",
         data_spec=data_spec,
         buffer_capacity=np.clip(cfg.steps//5, 1_000, 1_000_000), # TODO: deal with this
-        fps=cfg.env.fps,
+        fps=1, #cfg.env.fps,
         delta_timestamps=delta_timestamps
     )
     return buffer

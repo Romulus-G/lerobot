@@ -237,15 +237,19 @@ class PushCubeEnv(EnvConfig):
     module: str = "gym_lowcostrobot"
 
     max_episode_steps: int = 50
+
     observation_mode: str = "state"
-    action_mode: str = "ee"
+    action_mode: str = "joint"
     reward_type: str = "dense"
     block_gripper: bool = True
     distance_threshold: float = 0.05
     cube_xy_range: float = 0.3
-    target_xy_range: float = 0.3
     n_substeps: int = 20
     render_mode: str | None = None
+
+    # only for PushCube-v0
+    target_xy_range: float = 0.3
+    
     robot_observation_mode: str | None = "joint"
     cube_vel: bool = False
     help_ee_to_cube: bool = False
@@ -294,11 +298,11 @@ class PushCubeEnv(EnvConfig):
             "block_gripper": self.block_gripper,
             "distance_threshold": self.distance_threshold,
             "cube_xy_range": self.cube_xy_range,
-            "target_xy_range": self.target_xy_range,
             "n_substeps": self.n_substeps,
             "render_mode": self.render_mode,
+        } | {
+            "target_xy_range": self.target_xy_range,
             "robot_observation_mode": self.robot_observation_mode,
             "cube_vel": self.cube_vel,
             "help_ee_to_cube": self.help_ee_to_cube,
         }
-    
