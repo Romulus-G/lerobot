@@ -203,7 +203,7 @@ def train_online(cfg: TrainPipelineConfig):
                         eval_env, policy, cfg.eval.n_episodes, 
                         start_seed=cfg.seed+step, 
                         max_episodes_rendered=1, 
-                        videos_dir=cfg.output_dir/"videos")
+                        videos_dir=cfg.output_dir / "eval" / f"videos_step_{step_id}",)
                 policy._prev_mean = None
                 eval_metrics = {
                     "avg_sum_reward": AverageMeter("∑rwrd", ":.3f"),
