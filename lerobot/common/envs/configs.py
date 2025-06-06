@@ -176,10 +176,9 @@ class LowCostRobotEnv(EnvConfig):
 
     # only for PushCube-v0
     target_xy_range: float = 0.3
-
-    robot_observation_mode: str | None = "joint"
+    simulation_timestep: float = 0.002
+    robot_observation_mode: str = "joint"
     cube_vel: bool = False
-    help_ee_to_cube: bool = False
 
     def __post_init__(self):
         if self.observation_mode in ['image', 'both'] or not self.block_gripper or self.reward_type == 'sparse': raise NotImplementedError
@@ -230,7 +229,5 @@ class LowCostRobotEnv(EnvConfig):
             "render_mode": self.render_mode,
         } | ({
             "target_xy_range": self.target_xy_range,
-            "robot_observation_mode": self.robot_observation_mode,
-            "cube_vel": self.cube_vel,
-            "help_ee_to_cube": self.help_ee_to_cube,
+            "simulation_timestep": self.simulation_timestep,
         } if self.task == "PushCube-v0" else {})
