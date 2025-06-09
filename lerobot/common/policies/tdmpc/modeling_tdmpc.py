@@ -616,6 +616,10 @@ class TDMPCTOLD(nn.Module):
                 - (*,) tensor for the estimated reward.
         """
         x = torch.cat([z, a], dim=-1)
+
+        if self.config.residual:
+            return z + self._dynamics(x), self._reward(x).squeeze(-1)
+        
         return self._dynamics(x), self._reward(x).squeeze(-1)
 
     def latent_dynamics(self, z: Tensor, a: Tensor) -> Tensor:
@@ -628,6 +632,10 @@ class TDMPCTOLD(nn.Module):
             (*, latent_dim) tensor for the next state's latent representation.
         """
         x = torch.cat([z, a], dim=-1)
+
+        if self.config.residual:
+            return z + self._dynamics(x)
+
         return self._dynamics(x)
 
     def pi(self, z: Tensor, std: float = 0.0) -> Tensor:

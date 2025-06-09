@@ -128,6 +128,8 @@ class TDMPCConfig(PreTrainedConfig):
     latent_dim: int = 50
     q_ensemble_size: int = 5
     mlp_dim: int = 512
+    residual: bool = False
+    
     # Reinforcement learning.
     discount: float = 0.9
 
