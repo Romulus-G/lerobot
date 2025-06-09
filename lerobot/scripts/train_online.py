@@ -201,8 +201,8 @@ def train_online(cfg: TrainPipelineConfig):
                 with torch.no_grad(), torch.autocast(device_type=policy.device.type) if cfg.policy.use_amp else nullcontext():
                     eval_info = eval_policy(
                         eval_env, policy, cfg.eval.n_episodes, 
-                        start_seed=cfg.seed+step, 
-                        max_episodes_rendered=1, 
+                        start_seed=cfg.seed, 
+                        max_episodes_rendered=2, 
                         videos_dir=cfg.output_dir / "eval" / f"videos_step_{step_id}",)
                 policy._prev_mean = None
                 eval_metrics = {
