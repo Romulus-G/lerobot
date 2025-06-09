@@ -181,6 +181,8 @@ class LowCostRobotEnv(EnvConfig):
     cube_vel: bool = False
 
     def __post_init__(self):
+        self.fps = round(1 / (self.simulation_timestep * self.n_substeps))
+
         if self.observation_mode in ['image', 'both'] or not self.block_gripper or self.reward_type == 'sparse': raise NotImplementedError
 
         action_shape = {"joint": 5, "ee": 3}[self.action_mode]

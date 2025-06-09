@@ -173,11 +173,11 @@ def rollout(
 
         # VectorEnv stores is_success in `info["final_info"][env_index]["is_success"]`. "final_info" isn't
         # available of none of the envs finished.
-        if "final_info" in info:
-            successes = [info["is_success"] if info is not None else False for info in info["final_info"]]
-        else:
-            successes = [False] * env.num_envs
-
+        # if "final_info" in info:
+        #     successes = [info["is_success"] if info is not None else False for info in info["final_info"]]
+        # else:
+        #     successes = [False] * env.num_envs
+        successes = np.where(info["_is_success"], info["is_success"], False).astype(bool)
         # Keep track of which environments are done so far.
         done = terminated | truncated | done
 
